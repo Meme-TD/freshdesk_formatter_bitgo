@@ -13,7 +13,7 @@ from openpyxl import load_workbook
 
 FRESHDESK_DOMAIN = "bitgo"
 API_KEY = os.environ.get("FRESHDESK_API_KEY", "")
-XLSX_PATH = "FD_canned_response_and_KB_articles_clean-up_-_March_2026__2_.xlsx"
+XLSX_PATH = "FD_canned_response_and_KB_articles_clean-up_-_March_2026__3_.xlsx" 
 SHEET_NAME = "All KB Articles"
 
 MODE = "dry_run"
@@ -25,7 +25,7 @@ REQUEST_PAUSE = 0.6
 REQUIRE_PUBLISHED = True
 EXCLUDE_FOLDER_SUBSTR = "deprecat"
 
-# Colors / sizes
+#colors/sizes
 TITLE_BLUE_OTHER = "#1647DB" #rgb(22,71,219)
 LINK_COLOR_UG    = "#173ECA" #rgb(23,62,202)
 BLACK            = "#000000"
@@ -130,7 +130,6 @@ def find_title_element(soup, article_title):
 
 
 def center_image(img):
-    # clear Froala float-left and center as a block; harmless inside flex wrappers
     set_styles(img, float="none", display="block",
                margin_left="auto", margin_right="auto")
 
@@ -210,7 +209,14 @@ def transform_user_guide(html, article_title):
 
     title_el = find_title_element(soup, article_title)
     title_id = id(title_el) if title_el is not None else None
-
+    title_protect_ids = set()
+    if title_el is not None:
+        title_protect_ids.add(id(title_el))
+        for _d in title_el.find_all(True):          #descendants
+            title_protect_ids.add(id(_d))
+        for _p in title_el.parents:                 #ancestors
+            title_protect_ids.add(id(_p))
+    
     # candidate content blocks
     blocks = [el for el in soup.find_all(["p", "li"] + HEADINGS)
               if el.get_text(strip=True) or el.find("img")]
@@ -263,27 +269,42 @@ def transform_user_guide(html, article_title):
         set_styles(a, color=LINK_COLOR_UG)
         override_descendant_color(a, LINK_COLOR_UG)
 
-    for img in soup.find_all("img"):                       # 1 after each image
-        img.insert_after(soup.new_tag("br"))
-
-    for el in soup.find_all("p"):                          # 2 before each subheader
-        if id(el) in subtitle_ids and el.find_previous_sibling() is not None:
-            el.insert_before(soup.new_tag("br"))
-            el.insert_before(soup.new_tag("br"))
-
-    for p in [e for e in soup.find_all("p")                # 1 between body paragraphs
-              if id(e) != title_id and id(e) not in subtitle_ids]:
+    for img in soup.find_all("img"):
+        nxt = img.find_next_sibling()
+        if getattr(nxt, "name", None) != "br":             # skip if a <br> is already there
+            img.insert_after(soup.new_tag("br"))
+ 
+    for el in soup.find_all("p"):                          # exactly 2 before each subheader
+        if id(el) in subtitle_ids:
+            prev = el.find_previous_sibling()              # strip any existing leading <br>s
+            while prev is not None and prev.name == "br":
+                stale = prev
+                prev = prev.find_previous_sibling()
+                stale.decompose()
+            if el.find_previous_sibling() is not None:     # not the first block -> add 2
+                el.insert_before(soup.new_tag("br"))
+                el.insert_before(soup.new_tag("br"))
+ 
+    for p in [e for e in soup.find_all("p")                # exactly 1 between body paragraphs
+              if id(e) not in title_protect_ids and id(e) not in subtitle_ids]:  # BUG FIX #1
         nxt = p.find_next_sibling()
         if getattr(nxt, "name", None) == "p" and id(nxt) not in subtitle_ids \
-                and id(nxt) != title_id:
-            p.insert_after(soup.new_tag("br"))
-
+                and id(nxt) not in title_protect_ids:      # BUG FIX #1
+            p.insert_after(soup.new_tag("br"))             # (naturally idempotent: an existing
+                                                           #  <br> makes nxt a <br>, not a <p>)
+ 
+    # exactly 3 breaks at the very end: remove trailing <br>/blank text first
+    while soup.contents:
+        tail = soup.contents[-1]
+        tail_name = getattr(tail, "name", None)
+        if tail_name == "br":
+            tail.extract()
+        elif tail_name is None and not str(tail).strip():  # trailing whitespace text node
+            tail.extract()
+        else:
+            break
     for _ in range(3):                                     # 3 at end
         soup.append(soup.new_tag("br"))
-
-    report = {"title": title_el.get_text(strip=True) if title_el else None,
-              "subtitles": subtitle_texts, "body_px": body_px}
-    return str(soup), (title_el is not None), report
 
 
 
@@ -291,7 +312,7 @@ def main():
     global MODE
     if len(sys.argv) > 1:
         MODE = sys.argv[1]
-    if MODE != "inspect" and not API_KEY:
+    if not API_KEY:
         sys.exit("ERROR: set the FRESHDESK_API_KEY environment variable first.")
 
     articles = read_articles()
