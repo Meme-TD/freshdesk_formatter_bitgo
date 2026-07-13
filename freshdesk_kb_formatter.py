@@ -8,13 +8,11 @@ import pathlib
 import requests
 from collections import Counter
 from bs4 import BeautifulSoup
-from openpyxl import load_workbook
 
 
 FRESHDESK_DOMAIN = "bitgo"
 API_KEY = os.environ.get("FRESHDESK_API_KEY", "")
-XLSX_PATH = "FD_canned_response_and_KB_articles_clean-up_-_March_2026__3_.xlsx" 
-SHEET_NAME = "All KB Articles"
+CSV_PATH = "CleanSheet.csv"
 
 MODE = "dry_run"
 INSPECT_COUNT = 3
@@ -25,9 +23,8 @@ REQUEST_PAUSE = 0.6
 REQUIRE_PUBLISHED = True
 EXCLUDE_FOLDER_SUBSTR = "deprecat"
 
-#colors/sizes
+# Colors / sizes
 TITLE_BLUE_OTHER = "#1647DB" #rgb(22,71,219)
-LINK_COLOR_UG    = "#173ECA" #rgb(23,62,202)
 BLACK            = "#000000"
 FONT_FAMILY      = "Arial, sans-serif"
 TITLE_SIZE       = "30px"
@@ -62,28 +59,30 @@ def _request(method, url, **kw):
 
 #spreadsheet garbage
 def read_articles():
-    ws = load_workbook(XLSX_PATH)[SHEET_NAME]
     out = []
-    for r in range(2, ws.max_row + 1):
-        category, folder, title = ws.cell(r, 2).value, ws.cell(r, 3).value, ws.cell(r, 4).value
-        cell = ws.cell(r, 5)
-        link = cell.value or (cell.hyperlink.target if cell.hyperlink else None)
-        published = ws.cell(r, 6).value
-        if category is None and title is None and link is None:
-            continue
-        if REQUIRE_PUBLISHED and str(published).strip().lower() != "yes":
-            continue
-        if folder and EXCLUDE_FOLDER_SUBSTR in str(folder).lower():
-            continue
-        m = re.search(r"/articles/(\d+)", str(link)) if link else None
-        if not m:
-            continue
-        out.append({"id": m.group(1), "title": (title or "").strip(),
-                    "category": str(category).strip(),
-                    "is_user_guide": str(category).strip().lower() == "bitgo user guide",
-                    "row": r})
+    with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        has_published = "Published?" in (reader.fieldnames or [])
+        for i, row in enumerate(reader, start=2):   # start=2 -> header is line 1
+            category = row.get("KB Category")
+            folder   = row.get("Folder")
+            title    = row.get("KB Title")
+            link     = row.get("Freshdesk Internal KB Hyperlink")
+            if not any([category, title, link]):
+                continue
+            if REQUIRE_PUBLISHED and has_published \
+                    and str(row.get("Published?")).strip().lower() != "yes":
+                continue
+            if folder and EXCLUDE_FOLDER_SUBSTR in str(folder).lower():
+                continue
+            m = re.search(r"/articles/(\d+)", str(link)) if link else None
+            if not m:
+                continue
+            out.append({"id": m.group(1), "title": (title or "").strip(),
+                        "category": str(category).strip(),
+                        "is_user_guide": str(category).strip().lower() == "bitgo user guide",
+                        "row": i})
     return out
-
 
 #style
 def parse_style(s):
@@ -130,6 +129,7 @@ def find_title_element(soup, article_title):
 
 
 def center_image(img):
+    # clear Froala float-left and center as a block; harmless inside flex wrappers
     set_styles(img, float="none", display="block",
                margin_left="auto", margin_right="auto")
 
@@ -209,14 +209,15 @@ def transform_user_guide(html, article_title):
 
     title_el = find_title_element(soup, article_title)
     title_id = id(title_el) if title_el is not None else None
+
     title_protect_ids = set()
     if title_el is not None:
         title_protect_ids.add(id(title_el))
-        for _d in title_el.find_all(True):          #descendants
+        for _d in title_el.find_all(True):          # descendants
             title_protect_ids.add(id(_d))
-        for _p in title_el.parents:                 #ancestors
+        for _p in title_el.parents:                 # ancestors
             title_protect_ids.add(id(_p))
-    
+
     # candidate content blocks
     blocks = [el for el in soup.find_all(["p", "li"] + HEADINGS)
               if el.get_text(strip=True) or el.find("img")]
@@ -224,7 +225,7 @@ def transform_user_guide(html, article_title):
     # body size = most common representative size among non-title blocks
     sizes = []
     for el in blocks:
-        if id(el) == title_id:
+        if id(el) in title_protect_ids:
             continue
         s = block_min_text_size_px(el)
         if s:
@@ -235,7 +236,7 @@ def transform_user_guide(html, article_title):
     subtitle_ids = set()
     subtitle_texts = []
     for el in blocks:
-        if id(el) == title_id:
+        if id(el) in title_protect_ids:
             continue
         is_heading = el.name in HEADINGS
         looks_like_subtitle = False
@@ -258,7 +259,7 @@ def transform_user_guide(html, article_title):
         if id(el) in subtitle_ids:
             restyle_ug_block(el, SUBTITLE_SIZE, color=BLACK, bold=True)
     for el in blocks:
-        if id(el) == title_id or id(el) in subtitle_ids:
+        if id(el) in title_protect_ids or id(el) in subtitle_ids:
             continue
         restyle_ug_block(el, BODY_SIZE, color=BLACK, bold=False)
 
@@ -266,10 +267,10 @@ def transform_user_guide(html, article_title):
         h.name = "p"
 
     for a in soup.find_all("a"):
-        set_styles(a, color=LINK_COLOR_UG)
-        override_descendant_color(a, LINK_COLOR_UG)
+        set_styles(a, color=TITLE_BLUE_OTHER)
+        override_descendant_color(a, TITLE_BLUE_OTHER)
 
-    for img in soup.find_all("img"):
+    for img in soup.find_all("img"):                       # exactly 1 after each image
         nxt = img.find_next_sibling()
         if getattr(nxt, "name", None) != "br":             # skip if a <br> is already there
             img.insert_after(soup.new_tag("br"))
@@ -286,10 +287,10 @@ def transform_user_guide(html, article_title):
                 el.insert_before(soup.new_tag("br"))
  
     for p in [e for e in soup.find_all("p")                # exactly 1 between body paragraphs
-              if id(e) not in title_protect_ids and id(e) not in subtitle_ids]:  # BUG FIX #1
+              if id(e) not in title_protect_ids and id(e) not in subtitle_ids]:  
         nxt = p.find_next_sibling()
         if getattr(nxt, "name", None) == "p" and id(nxt) not in subtitle_ids \
-                and id(nxt) not in title_protect_ids:      # BUG FIX #1
+                and id(nxt) not in title_protect_ids:
             p.insert_after(soup.new_tag("br"))             # (naturally idempotent: an existing
                                                            #  <br> makes nxt a <br>, not a <p>)
  
@@ -306,6 +307,12 @@ def transform_user_guide(html, article_title):
     for _ in range(3):                                     # 3 at end
         soup.append(soup.new_tag("br"))
 
+ 
+    report = {"title": title_el.get_text(strip=True) if title_el else None,
+              "subtitles": subtitle_texts, "body_px": body_px}
+    return str(soup), (title_el is not None), report
+ 
+    
 
 
 def main():
