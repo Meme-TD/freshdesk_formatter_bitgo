@@ -3,7 +3,6 @@ import re
 import sys
 import csv
 import time
-import json
 import pathlib
 import requests
 from collections import Counter
@@ -19,9 +18,6 @@ INSPECT_COUNT = 3
 LIMIT = None
 ONLY_ARTICLE_IDS = []       
 REQUEST_PAUSE = 0.6
-
-REQUIRE_PUBLISHED = True
-EXCLUDE_FOLDER_SUBSTR = "deprecat"
 
 # Colors / sizes
 TITLE_BLUE_OTHER = "#1647DB" #rgb(22,71,219)
@@ -62,26 +58,18 @@ def read_articles():
     out = []
     with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        has_published = "Published?" in (reader.fieldnames or [])
-        for i, row in enumerate(reader, start=2):   # start=2 -> header is line 1
+        for row in reader:
             category = row.get("KB Category")
-            folder   = row.get("Folder")
             title    = row.get("KB Title")
             link     = row.get("Freshdesk Internal KB Hyperlink")
             if not any([category, title, link]):
-                continue
-            if REQUIRE_PUBLISHED and has_published \
-                    and str(row.get("Published?")).strip().lower() != "yes":
-                continue
-            if folder and EXCLUDE_FOLDER_SUBSTR in str(folder).lower():
                 continue
             m = re.search(r"/articles/(\d+)", str(link)) if link else None
             if not m:
                 continue
             out.append({"id": m.group(1), "title": (title or "").strip(),
                         "category": str(category).strip(),
-                        "is_user_guide": str(category).strip().lower() == "bitgo user guide",
-                        "row": i})
+                        "is_user_guide": str(category).strip().lower() == "bitgo user guide"})
     return out
 
 #style
@@ -125,7 +113,7 @@ def find_title_element(soup, article_title):
             for el in soup.find_all(tags):
                 if norm(el.get_text()) == want:
                     return el
-    return soup.find(["h1", "h2", "h3"])
+    return None
 
 
 def center_image(img):
@@ -208,7 +196,6 @@ def transform_user_guide(html, article_title):
                 el.decompose()
 
     title_el = find_title_element(soup, article_title)
-    title_id = id(title_el) if title_el is not None else None
 
     title_protect_ids = set()
     if title_el is not None:
@@ -270,7 +257,8 @@ def transform_user_guide(html, article_title):
         set_styles(a, color=TITLE_BLUE_OTHER)
         override_descendant_color(a, TITLE_BLUE_OTHER)
 
-    for img in soup.find_all("img"):                       # exactly 1 after each image
+    for img in soup.find_all("img"):                       # center + exactly 1 <br> after each image
+        center_image(img)
         nxt = img.find_next_sibling()
         if getattr(nxt, "name", None) != "br":             # skip if a <br> is already there
             img.insert_after(soup.new_tag("br"))
@@ -349,6 +337,7 @@ def main():
         dryroot.mkdir(exist_ok=True)
 
     missing = []
+    no_size_signal = []
     for i, a in enumerate(articles, 1):
         try:
             data = fd_get_article(a["id"])
@@ -359,6 +348,8 @@ def main():
         new_html, found, rep = fn(html, a["title"])
         if not found:
             missing.append(a["id"])
+        if a["is_user_guide"] and rep.get("body_px") is None:
+            no_size_signal.append(a["id"])
         tag = "UG" if a["is_user_guide"] else "OTHER"
 
         if MODE == "dry_run":
@@ -385,7 +376,10 @@ def main():
         print(f"\nBefore/after HTML + _classification.csv in {dryroot}/ — review before apply.")
     if missing:
         print(f"\nWARNING: in-body title not found for {len(missing)} articles: {missing}")
+    if no_size_signal:
+        print(f"\nWARNING: no font-size signal in {len(no_size_signal)} user-guide articles; "
+              f"subtitle detection fell back to heading tags only — verify these manually: {no_size_signal}")
 
 
 if __name__ == "__main__":
-    main()
+    main() 
