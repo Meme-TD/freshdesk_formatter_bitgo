@@ -1,25 +1,24 @@
 import os
-import re
+import re #extracting article IDs
 import sys
 import csv
 import time
 import pathlib
-import requests
+import requests #http calls to freshdesk
 from collections import Counter
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup #editing html
 
 
 FRESHDESK_DOMAIN = "bitgo"
 API_KEY = os.environ.get("FRESHDESK_API_KEY", "")
 CSV_PATH = "CleanSheet.csv"
 
-MODE = "dry_run"
+MODE = "dry_run" #defualt mode if i dont pass any arguments. dry run processes everything without applying stuff to freshdesk directly
 INSPECT_COUNT = 3
-LIMIT = None
+LIMIT = None #number of articles processed at the same time
 ONLY_ARTICLE_IDS = []       
 REQUEST_PAUSE = 0.6
 
-# Colors / sizes
 TITLE_BLUE_OTHER = "#1647DB" #rgb(22,71,219)
 BLACK            = "#000000"
 FONT_FAMILY      = "Arial, sans-serif"
@@ -37,11 +36,11 @@ AUTH = (API_KEY, "X")
 
 
 def fd_get_article(aid):
-    return _request("GET", f"{BASE}/solutions/articles/{aid}")
+    return _request("GET", f"{BASE}/solutions/articles/{aid}") #get article
 
 
 def fd_update_article(aid, html):
-    return _request("PUT", f"{BASE}/solutions/articles/{aid}", json={"description": html})
+    return _request("PUT", f"{BASE}/solutions/articles/{aid}", json={"description": html}) #edit article
 
 
 def _request(method, url, **kw):
@@ -49,33 +48,32 @@ def _request(method, url, **kw):
         r = requests.request(method, url, auth=AUTH, timeout=30, **kw)
         if r.status_code == 429:
             wait = int(r.headers.get("Retry-After", "10"))
-            print(f"  rate limited, sleeping {wait}s"); time.sleep(wait); continue
+            print(f"  rate limited {wait}s"); time.sleep(wait); continue
         r.raise_for_status(); return r.json()
-    raise RuntimeError(f"Too many retries for {url}")
+    raise RuntimeError(f"Too many retries for {url}") #prevent infinite loop if rate limit keeps happening
 
-#spreadsheet garbage
 def read_articles():
     out = []
-    with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
+    with open(CSV_PATH, newline="", encoding="utf-8-sig") as f: #strips encoding bom
         reader = csv.DictReader(f)
         for row in reader:
             category = row.get("KB Category")
             title    = row.get("KB Title")
             link     = row.get("Freshdesk Internal KB Hyperlink")
-            if not any([category, title, link]):
+            if not any([category, title, link]): #blank rows
                 continue
-            m = re.search(r"/articles/(\d+)", str(link)) if link else None
+            m = re.search(r"/articles/(\d+)", str(link)) if link else None #gets article ID from link
             if not m:
                 continue
-            out.append({"id": m.group(1), "title": (title or "").strip(),
+            out.append({"id": m.group(1), "title": (title or "").strip(), #handles white space and None values
                         "category": str(category).strip(),
                         "is_user_guide": str(category).strip().lower() == "bitgo user guide"})
     return out
 
-#style
+#thank you claude for the brilliant idea of using dictionaries instead of editing strings
 def parse_style(s):
     d = {}
-    for part in (s or "").split(";"):
+    for part in (s or "").split(";"): #turns "color: red; font-size: 16px" into {"color": "red", "font-size": "16px"}
         if ":" in part:
             k, v = part.split(":", 1)
             d[k.strip().lower()] = v.strip()
@@ -85,18 +83,18 @@ def parse_style(s):
 def dump_style(d):
     return "; ".join(f"{k}: {v}" for k, v in d.items())
 
-
+#turns dictionary back itno string
 def set_styles(el, **props):
     d = parse_style(el.get("style", ""))
     for k, v in props.items():
-        d[k.replace("_", "-")] = v
+        d[k.replace("_", "-")] = v #turn into css property
     el["style"] = dump_style(d)
 
 
 def norm(t):
-    return re.sub(r"\s+", " ", (t or "")).strip().lower()
+    return re.sub(r"\s+", " ", (t or "")).strip().lower() #turns tabs, newlines, multiple spaces into 1 space
 
-
+#converts points to pixels (idk if this is really needed but it's good to have)
 def size_to_px(v):
     m = re.match(r"([\d.]+)\s*(px|pt)?", (v or "").strip())
     if not m:
@@ -104,7 +102,7 @@ def size_to_px(v):
     num = float(m.group(1)); unit = m.group(2) or "px"
     return num * (96.0 / 72.0) if unit == "pt" else num
 
-
+#finds title in freshdesk article body
 def find_title_element(soup, article_title):
     want = norm(article_title)
     if want:
@@ -115,13 +113,12 @@ def find_title_element(soup, article_title):
                     return el
     return None
 
-
+#clear default Froala float-left and center the image
 def center_image(img):
-    # clear Froala float-left and center as a block; harmless inside flex wrappers
     set_styles(img, float="none", display="block",
                margin_left="auto", margin_right="auto")
 
-
+#child and descendent elements inherit color of their parent
 def override_descendant_color(el, color):
     for d in el.find_all(True):
         st = parse_style(d.get("style", ""))
@@ -131,10 +128,6 @@ def override_descendant_color(el, color):
 
 
 def restyle_ug_block(block, size, color, bold):
-    """Arial + size (+ optional color/bold), normalizing nested spans.
-       color=None -> leave colors (title keeps its color)
-       bold=True  -> force bold (strip descendant weights so block wins)
-       bold=False -> keep descendant weights (preserve inline bold body text)"""
     set_styles(block, font_family=FONT_FAMILY, font_size=size)
     if bold:
         set_styles(block, font_weight="bold")
@@ -142,7 +135,7 @@ def restyle_ug_block(block, size, color, bold):
         set_styles(block, color=color)
     for d in block.find_all(True):
         st = parse_style(d.get("style", ""))
-        st.pop("font-family", None)
+        st.pop("font-family", None) #remove if present, else none
         st.pop("font-size", None)
         if color is not None:
             st.pop("color", None)
@@ -154,17 +147,16 @@ def restyle_ug_block(block, size, color, bold):
             del d["style"]
 
 HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"]
-
-
+#removes line breaks and empty space
 def is_spacer(el):
     return (el.name in ["p"] + HEADINGS
             and not el.get_text(strip=True)
             and el.find("img") is None)
 
-
+#min size to find body text
 def block_min_text_size_px(el):
     sizes = []
-    for node in [el] + el.find_all(True):
+    for node in [el] + el.find_all(True): #for node in element and all its descendants
         st = parse_style(node.get("style", ""))
         if "font-size" in st and node.get_text(strip=True):
             px = size_to_px(st["font-size"])
@@ -183,7 +175,7 @@ def transform_other(html, article_title):
     for img in soup.find_all("img"):
         center_image(img)
     report = {"title": title_el.get_text(strip=True) if title_el else None, "subtitles": []}
-    return str(soup), (title_el is not None), report
+    return str(soup), (title_el is not None), report #returns html, whether the title was found, and report of changes
 
 
 #user guide
@@ -200,9 +192,9 @@ def transform_user_guide(html, article_title):
     title_protect_ids = set()
     if title_el is not None:
         title_protect_ids.add(id(title_el))
-        for _d in title_el.find_all(True):          # descendants
+        for _d in title_el.find_all(True):          #descendants
             title_protect_ids.add(id(_d))
-        for _p in title_el.parents:                 # ancestors
+        for _p in title_el.parents:                 #ancestors
             title_protect_ids.add(id(_p))
 
     # candidate content blocks
@@ -219,7 +211,7 @@ def transform_user_guide(html, article_title):
             sizes.append(round(s, 1))
     body_px = Counter(sizes).most_common(1)[0][0] if sizes else None
 
-    # classify subtitles
+    #classify subtitles
     subtitle_ids = set()
     subtitle_texts = []
     for el in blocks:
@@ -321,8 +313,8 @@ def main():
     other = [a for a in articles if not a["is_user_guide"]]
     print(f"MODE={MODE}  user-guide={len(ug)}  other={len(other)}  total={len(articles)}")
 
-    if MODE == "inspect":
-        outdir = pathlib.Path("fd_inspect"); outdir.mkdir(exist_ok=True)
+    if MODE == "inspect": #claude wrote this section below LOL
+        outdir = pathlib.Path("fd_inspect"); outdir.mkdir(exist_ok=True) # Creates folder called fd_inspect for outputs
         for a in ug[:INSPECT_COUNT] + other[:INSPECT_COUNT]:
             data = fd_get_article(a["id"]); tag = "UG" if a["is_user_guide"] else "OTHER"
             (outdir / f"{tag}_{a['id']}.html").write_text(data.get("description") or "", encoding="utf-8")
