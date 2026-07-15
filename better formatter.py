@@ -436,6 +436,17 @@ def _style_list(el, soup):
         lbase.update(lkeep)
         set_style(li, lbase)
 
+        # Writers sometimes nest heading tags inside a list item. Demote each
+        # to a plain span and strip ALL its inline styling (Helvetica, grey
+        # color, pt size, etc.) so it inherits the list's 16px Arial black
+        # styling instead of rendering as a grey subheading. Links keep their
+        # style (recolored blue by the run scrub below).
+        for h in li.find_all(("h1", "h2", "h3", "h4", "h5", "h6")):
+            h.name = "span"
+            for node in [h] + h.find_all(True):
+                if node.name != "a" and node.has_attr("style"):
+                    del node["style"]
+
         for child in li.find_all(recursive=False):
             if child.name in ("ol", "ul"):
                 _style_list(child, soup)
@@ -487,16 +498,90 @@ def _style_table_block(el, soup):
                 set_style(run, new)
 
 
+def _is_marker_char(ch):
+    """A leading 'box marker' char: whitespace/nbsp, a literal '?', the Unicode
+    replacement char, an emoji variation selector / ZWJ, or any symbol/emoji
+    codepoint (>= U+2190: arrows, dingbats, pictographs, emoji)."""
+    if ch in " \t\r\n ?�️‍​":
+        return True
+    return ord(ch) >= 0x2190
+
+
+def _strip_leading_markers(root):
+    """Strip a leading run of marker chars (unrendered emoji / '?') from the
+    start of an element's text. Only touches the very beginning; a '?' later in
+    the text is left alone."""
+    for text in list(root.strings):
+        s = str(text)
+        if s.strip("\xa0 \t\r\n") == "":
+            continue                       # pure whitespace node: keep scanning
+        i = 0
+        while i < len(s) and _is_marker_char(s[i]):
+            i += 1
+        new = s[i:].lstrip("\xa0 ")
+        if new.strip() == "":
+            text.extract()                 # node was only marker(s): drop it
+            continue                       # look at the next text node
+        if new != s:
+            text.replace_with(new)
+        break                              # reached the first real content
+
+
+def _table_is_box(table):
+    """A single-column table used as a callout/note box (one <td> per row).
+    A real data table has at least one row with two or more cells."""
+    rows = table.find_all("tr")
+    if not rows:
+        return False
+    for tr in rows:
+        if len(tr.find_all(["td", "th"], recursive=False)) > 1:
+            return False   # multi-column -> genuine table, keep it
+    return True            # every row single-column -> box
+
+
+def _unwrap_box_tables(soup):
+    """Remove single-column 'box' wrappers by lifting each cell's content up
+    to where the box was. Multi-column tables are left untouched."""
+    BLOCK = ("p", "ol", "ul", "table", "div", "blockquote",
+             "h1", "h2", "h3", "h4", "h5", "h6")
+    for box in list(soup.children):
+        if not isinstance(box, Tag):
+            continue
+        if box.name == "table":
+            table = box
+        elif box.name == "div":
+            table = box.find("table")
+        else:
+            table = None
+        if table is None or not _table_is_box(table):
+            continue
+        for cell in table.find_all(["td", "th"]):
+            _strip_leading_markers(cell)   # drop the leading '?'/emoji marker
+            block_children = [c for c in cell.find_all(recursive=False)
+                              if getattr(c, "name", None) in BLOCK]
+            if block_children:
+                for c in block_children:
+                    box.insert_before(c.extract())
+            else:  # loose inline content -> wrap it in a paragraph
+                new_p = soup.new_tag("p")
+                for c in list(cell.contents):
+                    new_p.append(c.extract())
+                box.insert_before(new_p)
+        box.decompose()
+
+
 def transform_user_guide(html, sheet_title):
     soup = BeautifulSoup(html, "html.parser")
     report = {"title_found": False, "detected_title": "", "subtitle_count": 0,
               "uncertain": False, "notes": []}
     target = norm_title(sheet_title)
 
-    # Pass 1: drop comments, and remove pre-existing empty spacer paragraphs /
-    # empty heading blocks so old ad-hoc spacing can't compound.
+    # Pass 1: drop comments, unwrap single-column callout "boxes", and remove
+    # pre-existing empty spacer paragraphs / empty heading blocks so old ad-hoc
+    # spacing can't compound.
     for c in soup.find_all(string=lambda t: isinstance(t, Comment)):
         c.extract()
+    _unwrap_box_tables(soup)   # lift note-box content out; keep real tables
     top_blocks = []
     for child in list(soup.children):
         if isinstance(child, Comment):
