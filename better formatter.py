@@ -11,31 +11,30 @@ import requests
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 FONT = "Arial, Helvetica, sans-serif"
-BLUE = "rgb(22, 71, 219)"          # brand blue #1647DB
+BLUE = "rgb(22, 71, 219)"          #1647DB
 BLACK = "rgb(0, 0, 0)"
 
 USER_GUIDE_CATEGORY = "bitgo user guide"   # compared case-insensitively
 
-# A <p> is treated as a subtitle by size when its text is larger than body.
-# Body target is 16px; observed subtitles are ~16pt (21.3px) / 24px, and the
-# smallest real subtitle seen is 13pt (17.3px). 16.5 cleanly separates them.
+#a <p> is treated as a subtitle by size when its text is larger than body
+#body target is 16px observed subtitles are ~16pt (21.3px) / 24px, and the
+#smallest real subtitle seen is 13pt (17.3px). 16.5 cleanly separates them
 SUBTITLE_MIN_PX = 16.5
 
-# Bold-standalone-paragraph subheader heuristic thresholds.
+#bold-standalone-paragraph subheader heuristic thresholds.
 BOLD_SUBHEAD_MAX_WORDS = 8
 BOLD_SUBHEAD_MAX_CHARS = 70
 
-# Text-run tags we normalize inside a block.
+#text-run tags we normalize inside a block.
 RUN_TAGS = ("span", "a", "strong", "b", "font", "u", "em", "i")
 
-# Trailing/leading punctuation stripped when matching titles.
+#trailing/leading punctuation stripped when matching titles.
 _MATCH_PUNCT = " \t\r\n :;.,!?-–—\"'`"
 
-DEFAULT_PAUSE = 0.5   # seconds between API requests
+DEFAULT_PAUSE = 0.5   #seconds between api requests
 
 
 def parse_style(style_str):
-    """Parse an inline style string into an ordered dict of {prop: value}."""
     out = {}
     if not style_str:
         return out
@@ -47,7 +46,6 @@ def parse_style(style_str):
 
 
 def render_style(d):
-    """Render an ordered dict of style props back to a string (drops empties)."""
     return "; ".join(f"{k}: {v}" for k, v in d.items() if v != "")
 
 
@@ -60,16 +58,14 @@ def set_style(tag, d):
 
 
 def size_to_px(value, unit):
-    """Convert a font-size value to px. pt uses the CSS 96/72 ratio."""
     if unit == "px":
         return value
     if unit == "pt":
         return value * 96.0 / 72.0
-    return None  # em / other: unknown
+    return None  #em/other: unknown
 
 
 def font_size_px(style_str):
-    """Return the font-size of a style string in px, or None (em is unknown)."""
     m = re.search(r"font-size\s*:\s*([0-9.]+)\s*(px|pt|em)", style_str or "", re.I)
     if not m:
         return None
@@ -87,8 +83,6 @@ def style_is_bold(style_str):
 
 
 def norm_title(s):
-    """Normalize a title for comparison: lowercase, nbsp->space, collapse
-    whitespace, strip surrounding punctuation."""
     if not s:
         return ""
     s = s.replace(" ", " ")
@@ -101,19 +95,16 @@ def block_text(el):
 
 
 def is_empty_block(el):
-    """A block that renders as blank space: only <br>/whitespace and no image."""
     if el.find("img") is not None:
         return False
     return block_text(el).replace(" ", " ").strip() == ""
 
 
 def wraps_image(span):
-    """True if this run element exists only to wrap an <img> (skip scrubbing)."""
     return span.find("img") is not None
 
 
 def run_is_bold(run, stop):
-    """Walk from run up to (and including) `stop` checking for bold markup."""
     node = run
     while node is not None:
         if isinstance(node, Tag):
@@ -141,8 +132,6 @@ def run_is_link(run, block):
 
 
 def representative_px(p):
-    """Representative rendered font-size (px) of a <p>: max size across its
-    text-bearing runs; falls back to the block's own font-size."""
     sizes = []
     for run in p.find_all(RUN_TAGS):
         if wraps_image(run):
@@ -158,7 +147,6 @@ def representative_px(p):
 
 
 def paragraph_fully_bold(p):
-    """True if every non-empty text node in the paragraph is bold."""
     found = False
     for node in p.descendants:
         if isinstance(node, NavigableString):
@@ -171,14 +159,13 @@ def paragraph_fully_bold(p):
 
 
 def transform_non_user_guide(html, sheet_title):
-    """Recolor the matching title blue and center images. Nothing else."""
     soup = BeautifulSoup(html, "html.parser")
     report = {"title_found": False, "detected_title": "", "subtitle_count": "",
               "uncertain": False, "notes": []}
 
     target = norm_title(sheet_title)
 
-    # Find the first block-level element whose text matches the sheet title.
+    #find the first block-level element whose text matches the sheet title.
     title_el = None
     if target:
         for el in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "div"]):
@@ -720,7 +707,7 @@ def print_warnings(rows):
         print(f"\nUncertain subtitle detection ({len(uncertain)}):")
         for r in uncertain:
             print(f"  - {r['article_id']}  {r['group']}")
-            for n in r.get("notes", []):
+            for n in r.get("notes", "").split(" | "):
                 if n != "title not found":
                     print(f"        {n}")
     else:
