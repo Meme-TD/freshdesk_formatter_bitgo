@@ -1,40 +1,3 @@
-#!/usr/bin/env python3
-"""
-freshdesk_kb_formatter.py
-
-Normalize formatting of BitGo Freshdesk KB articles via the Freshdesk Solutions API.
-
-Two article groups (decided from the sheet's KB Category):
-  * User Guide      -> KB Category equals "bitgo user guide" (case-insensitive)
-  * Non-User-Guide  -> everything else
-
-Non-User-Guide  : minimal changes only
-  - recolor the body title (heading whose text matches the sheet KB Title) to
-    blue rgb(22, 71, 219), forcing the color onto every nested run so the whole
-    title turns blue; if the title is not found, skip it and report it.
-  - center all images.
-  - nothing else.
-
-User Guide      : normalize formatting from a clean slate
-  - convert all headings to <p> (no <h1>-<h6> in output), preserving role via
-    size/weight.
-  - all fonts -> Arial.
-  - title    : 30px bold Arial, keep its text color.
-  - subtitle : 24px bold Arial black.
-  - body     : 16px normal Arial black, but keep runs that are already bold.
-  - hyperlinks recolored to rgb(22, 71, 219).
-  - clear inherited cruft (margin/line-height/box-sizing/stray colors/13px/pt),
-    but keep list indentation (padding / padding-inline-start on <ol>/<ul>).
-  - spacing (empty <p><br></p> spacers): 2 before each subtitle, 1 between body
-    paragraphs, 1 after an image, 3 at the very end. Pre-existing empty spacer
-    paragraphs are removed first so old spacing doesn't compound.
-
-Modes: inspect | dry_run (default) | apply | restore
-
-Read the API key from the FRESHDESK_API_KEY environment variable.
-Requires: requests, beautifulsoup4
-"""
-
 import argparse
 import csv
 import datetime as dt
@@ -46,10 +9,6 @@ import time
 
 import requests
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
-
-# --------------------------------------------------------------------------- #
-# Constants
-# --------------------------------------------------------------------------- #
 
 FONT = "Arial, Helvetica, sans-serif"
 BLUE = "rgb(22, 71, 219)"          # brand blue #1647DB
@@ -74,10 +33,6 @@ _MATCH_PUNCT = " \t\r\n :;.,!?-–—\"'`"
 
 DEFAULT_PAUSE = 0.5   # seconds between API requests
 
-
-# --------------------------------------------------------------------------- #
-# Small style helpers
-# --------------------------------------------------------------------------- #
 
 def parse_style(style_str):
     """Parse an inline style string into an ordered dict of {prop: value}."""
@@ -131,10 +86,6 @@ def style_is_bold(style_str):
     return v.isdigit() and int(v) >= 600
 
 
-# --------------------------------------------------------------------------- #
-# Title matching
-# --------------------------------------------------------------------------- #
-
 def norm_title(s):
     """Normalize a title for comparison: lowercase, nbsp->space, collapse
     whitespace, strip surrounding punctuation."""
@@ -144,10 +95,6 @@ def norm_title(s):
     s = re.sub(r"\s+", " ", s).strip().lower()
     return s.strip(_MATCH_PUNCT)
 
-
-# --------------------------------------------------------------------------- #
-# Element/text helpers
-# --------------------------------------------------------------------------- #
 
 def block_text(el):
     return el.get_text()
@@ -223,10 +170,6 @@ def paragraph_fully_bold(p):
     return found
 
 
-# --------------------------------------------------------------------------- #
-# NON-USER-GUIDE transform
-# --------------------------------------------------------------------------- #
-
 def transform_non_user_guide(html, sheet_title):
     """Recolor the matching title blue and center images. Nothing else."""
     soup = BeautifulSoup(html, "html.parser")
@@ -271,10 +214,6 @@ def transform_non_user_guide(html, sheet_title):
     return str(soup), report
 
 
-# --------------------------------------------------------------------------- #
-# USER-GUIDE transform
-# --------------------------------------------------------------------------- #
-
 def _scrub_runs(container, role, block_for_bold):
     """Normalize every text run inside `container` for the given role.
 
@@ -289,8 +228,8 @@ def _scrub_runs(container, role, block_for_bold):
         new = {}
         if is_link:
             new["color"] = BLUE
-        elif role == "title" and "color" in old:
-            new["color"] = old["color"]          # title: keep its color
+        elif role == "title":
+            new["color"] = BLUE                  # title: force brand blue [2]
         # subtitle/body: drop color so the block's color cascades.
         if role == "body" and is_bold:
             new["font-weight"] = "bold"           # preserve real bold runs
@@ -388,18 +327,14 @@ def _style_paragraph(p, role, soup, prev_role=None):
         - but 0px on top when it sits directly under the main title (snug).
     This makes every inter-paragraph break render at size 16px.
     """
-    keep_color = None
-    if role == "title":
-        keep_color = parse_style(p.get("style", "")).get("color")
     if p.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
         p.name = "p"
     _scrub_runs(p, role, p)
     _trim_edge_breaks(p)
     if role == "title":
+        # Force the main title paragraph to be FONT, size 30px, bold, and brand BLUE
         d = {"font-family": FONT, "font-size": "30px", "font-weight": "bold",
-             "margin-top": "0px", "margin-bottom": "16px"}
-        if keep_color:
-            d["color"] = keep_color
+             "margin-top": "0px", "margin-bottom": "16px", "color": BLUE}
     elif role == "subtitle":
         # snug (0) directly under the title, and at the very top of the body
         top = "0px" if prev_role in (None, "title") else "24px"
@@ -454,7 +389,7 @@ def _style_list(el, soup):
                 _style_paragraph(child, "body", soup)
         # Scrub any runs sitting directly in the <li> (no wrapping <p>),
         # without descending into nested lists / paragraphs.
-        for run in li.find_all(RUN_TAGS):
+        for run in li.find_all(RUN_TAGOS if 'RUN_TAGOS' in globals() else RUN_TAGS):
             if wraps_image(run):
                 continue
             if run.find_parent(["p", "ol", "ul"]) not in (None, li) or \
@@ -502,7 +437,7 @@ def _is_marker_char(ch):
     """A leading 'box marker' char: whitespace/nbsp, a literal '?', the Unicode
     replacement char, an emoji variation selector / ZWJ, or any symbol/emoji
     codepoint (>= U+2190: arrows, dingbats, pictographs, emoji)."""
-    if ch in " \t\r\n ?�️‍​":
+    if ch in " \t\r\n ?️‍​":
         return True
     return ord(ch) >= 0x2190
 
@@ -680,10 +615,6 @@ def transform_user_guide(html, sheet_title):
     return str(soup), report
 
 
-# --------------------------------------------------------------------------- #
-# Sheet parsing
-# --------------------------------------------------------------------------- #
-
 ARTICLE_ID_RE = re.compile(r"/articles/(\d+)")
 
 
@@ -720,10 +651,6 @@ def read_sheet(path):
     return records
 
 
-# --------------------------------------------------------------------------- #
-# Freshdesk API client
-# --------------------------------------------------------------------------- #
-
 class Freshdesk:
     def __init__(self, domain, api_key, pause=DEFAULT_PAUSE):
         self.base = f"https://{domain}/api/v2"
@@ -756,10 +683,6 @@ class Freshdesk:
         return resp.json()
 
 
-# --------------------------------------------------------------------------- #
-# Selection / orchestration
-# --------------------------------------------------------------------------- #
-
 def select_records(records, ids, limit):
     if ids:
         wanted = set(str(i) for i in ids)
@@ -790,13 +713,13 @@ def print_warnings(rows):
     if not_found:
         print(f"\nTitle NOT found ({len(not_found)}):")
         for r in not_found:
-            print(f"  - {r['id']}  [{r['group']}]  {r['kb_title']!r}")
+            print(f"  - {r['article_id']}  [{r['group']}]  {r['kb_title']!r}")
     else:
         print("\nTitle not found: none")
     if uncertain:
         print(f"\nUncertain subtitle detection ({len(uncertain)}):")
         for r in uncertain:
-            print(f"  - {r['id']}  {r['group']}")
+            print(f"  - {r['article_id']}  {r['group']}")
             for n in r.get("notes", []):
                 if n != "title not found":
                     print(f"        {n}")
@@ -829,10 +752,6 @@ def write_classification_csv(path, rows):
         for r in rows:
             w.writerow(r)
 
-
-# --------------------------------------------------------------------------- #
-# Modes
-# --------------------------------------------------------------------------- #
 
 def mode_inspect(fd, records, out_dir, limit):
     n = limit if limit is not None else 3
@@ -929,10 +848,6 @@ def mode_restore(fd, backup_dir, ids, limit):
         print(f"  restored {aid}")
     print("Done.")
 
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Normalize BitGo Freshdesk KB article formatting.")
