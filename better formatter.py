@@ -275,14 +275,6 @@ def transform_non_user_guide(html, sheet_title):
 # USER-GUIDE transform
 # --------------------------------------------------------------------------- #
 
-def _make_spacer(soup):
-    p = soup.new_tag("p")
-    set_style(p, {"font-family": FONT, "font-size": "16px",
-                  "font-weight": "normal", "color": BLACK})
-    p.append(soup.new_tag("br"))
-    return p
-
-
 def _scrub_runs(container, role, block_for_bold):
     """Normalize every text run inside `container` for the given role.
 
@@ -305,15 +297,13 @@ def _scrub_runs(container, role, block_for_bold):
         set_style(run, new)
 
 
+def _is_blank_text(node):
+    return isinstance(node, NavigableString) and node.replace("\xa0", " ").strip() == ""
+
+
 def _meaningful_children(p):
     """Direct children of p, ignoring whitespace-only text nodes."""
-    res = []
-    for c in p.contents:
-        if isinstance(c, NavigableString):
-            if c.replace(" ", " ").strip() == "":
-                continue
-        res.append(c)
-    return res
+    return [c for c in p.contents if not _is_blank_text(c)]
 
 
 def _is_edge_break(node):
@@ -323,30 +313,81 @@ def _is_edge_break(node):
     return (isinstance(node, Tag) and node.name in RUN_TAGS
             and node.find("img") is None
             and node.find("br") is not None
-            and node.get_text().replace(" ", " ").strip() == "")
+            and node.get_text().replace("\xa0", " ").strip() == "")
+
+
+def _is_empty_wrapper(tag):
+    """A tag left with no text, no <img>, and no <br> inside it."""
+    return (isinstance(tag, Tag)
+            and tag.name not in ("img", "br")
+            and tag.find("img") is None
+            and tag.find("br") is None
+            and tag.get_text().replace("\xa0", " ").strip() == "")
+
+
+def _last_meaningful_node(node):
+    """Deepest last descendant that is a <br>, an <img>, or non-empty text.
+    Whitespace-only text and empty wrapper tags are skipped, so this sees
+    through nesting like <span><strong><img><br></strong></span>."""
+    for child in reversed(list(node.children)):
+        if isinstance(child, NavigableString):
+            if _is_blank_text(child):
+                continue
+            return child
+        if isinstance(child, Tag):
+            if child.name in ("br", "img"):
+                return child
+            found = _last_meaningful_node(child)
+            if found is not None:
+                return found
+            continue  # empty wrapper -> keep scanning left
+    return None
 
 
 def _trim_edge_breaks(p):
-    """Remove leading/trailing <br> spacers left inside a block (ad-hoc
-    spacing); internal <br> line breaks are preserved."""
-    changed = True
-    while changed:
-        changed = False
-        kids = _meaningful_children(p)
-        if not kids:
-            break
-        if _is_edge_break(kids[0]):
-            kids[0].extract()
-            changed = True
+    """Remove leading and trailing <br> spacers inside a block.
+
+    Trailing removal is DEEP: a <br> at the very end of the block is removed
+    even when nested (e.g. <span><strong><img><br></strong></span>), as long
+    as no meaningful text or image follows it. Any wrapper tags left empty by
+    the removal are cleaned up too. Internal <br> line breaks that have real
+    content after them are preserved.
+    """
+    # Trailing: repeatedly drop the last <br> wherever it is nested.
+    while True:
+        leaf = _last_meaningful_node(p)
+        if isinstance(leaf, Tag) and leaf.name == "br":
+            parent = leaf.parent
+            leaf.decompose()
+            node = parent
+            while node is not None and node is not p and _is_empty_wrapper(node):
+                nxt = node.parent
+                node.decompose()
+                node = nxt
             continue
-        if len(kids) > 1 and _is_edge_break(kids[-1]):
-            kids[-1].extract()
-            changed = True
+        break
+
+    # Leading: drop bare <br> / empty-<br>-wrapper spacers at the very start.
+    while True:
+        kids = _meaningful_children(p)
+        if not kids or not _is_edge_break(kids[0]):
+            break
+        kids[0].extract()
 
 
-def _style_paragraph(p, role, soup):
+def _style_paragraph(p, role, soup, prev_role=None):
     """Convert a heading to <p> if needed, scrub runs, set canonical block
-    style for the role."""
+    style for the role.
+
+    All vertical spacing is carried by margin-top/margin-bottom on the block
+    itself (never by empty spacer paragraphs, which Freshdesk strips into
+    parentless <br><br> that collapse to size 13):
+      * body / list / table paragraph : margin-top 0px,  margin-bottom 16px
+      * title                         : margin-top 0px,  margin-bottom 16px
+      * subtitle                      : margin-top 24px, margin-bottom 16px
+        - but 0px on top when it sits directly under the main title (snug).
+    This makes every inter-paragraph break render at size 16px.
+    """
     keep_color = None
     if role == "title":
         keep_color = parse_style(p.get("style", "")).get("color")
@@ -355,15 +396,20 @@ def _style_paragraph(p, role, soup):
     _scrub_runs(p, role, p)
     _trim_edge_breaks(p)
     if role == "title":
-        d = {"font-family": FONT, "font-size": "30px", "font-weight": "bold"}
+        d = {"font-family": FONT, "font-size": "30px", "font-weight": "bold",
+             "margin-top": "0px", "margin-bottom": "16px"}
         if keep_color:
             d["color"] = keep_color
     elif role == "subtitle":
+        # snug (0) directly under the title, and at the very top of the body
+        top = "0px" if prev_role in (None, "title") else "24px"
         d = {"font-family": FONT, "font-size": "24px",
-             "font-weight": "bold", "color": BLACK}
+             "font-weight": "bold", "color": BLACK,
+             "margin-top": top, "margin-bottom": "16px"}
     else:
         d = {"font-family": FONT, "font-size": "16px",
-             "font-weight": "normal", "color": BLACK}
+             "font-weight": "normal", "color": BLACK,
+             "margin-top": "0px", "margin-bottom": "16px"}
     set_style(p, d)
 
 
@@ -525,31 +571,26 @@ def transform_user_guide(html, sheet_title):
             report["subtitle_count"] += 1
         classified.append((el, role))
 
-    # Pass 3: style each block.
+    # Pass 3: style each block. prev_role lets a subtitle sit snug (margin-top
+    # 0) when it immediately follows the main title.
+    prev_role = None
     for el, role in classified:
         if el.name in ("ol", "ul"):
             _style_list(el, soup)
         elif el.name == "table" or (el.name == "div" and el.find("table") is not None):
             _style_table_block(el, soup)
         else:
-            _style_paragraph(el, role, soup)
+            _style_paragraph(el, role, soup, prev_role=prev_role)
+        prev_role = role
 
-    # Pass 4: rebuild the document with rule-driven spacing.
-    #   first block: 0 leading spacers; subtitle: 2 before; else: 1 before
-    #   (covers "between body paragraphs" and "after an image"); end: 3.
-    new_children = []
-    for el, role in classified:
-        if new_children:
-            gap = 2 if role == "subtitle" else 1
-            for _ in range(gap):
-                new_children.append(_make_spacer(soup))
-        new_children.append(el)
-    for _ in range(3):
-        new_children.append(_make_spacer(soup))
-
+    # Pass 4: flatten to the classified blocks in document order. No empty
+    # spacer paragraphs (Freshdesk strips them into parentless <br><br> that
+    # collapse to size 13) -- all vertical spacing is carried by each block's
+    # margin-top / margin-bottom set in Pass 3.
+    blocks_only = [el for el, _role in classified]
     soup.clear()
-    for c in new_children:
-        soup.append(c)
+    for el in blocks_only:
+        soup.append(el)
 
     return str(soup), report
 
